@@ -109,6 +109,15 @@ public class BreakIndicators extends Module {
         return breakStartTimes.containsKey(blockPos);
     }
 
+    public double getBlockProgress(BlockPos blockPos) {
+        if (!this.isBlockBeingBroken(blockPos)) {
+            return 0.0;
+        }
+
+        double currentGameTickCalculated = RenderUtils.getCurrentGameTickCalculated();
+        return breakStartTimes.get(blockPos).getBreakProgress(currentGameTickCalculated);
+    }
+
     @EventHandler
     private void onRender(Render3DEvent event) {
         double currentGameTickCalculated = RenderUtils.getCurrentGameTickCalculated();

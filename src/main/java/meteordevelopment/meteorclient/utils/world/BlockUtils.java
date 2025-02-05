@@ -36,9 +36,13 @@ import net.minecraft.util.math.Box;
 import net.minecraft.util.math.Direction;
 import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
+import net.minecraft.util.shape.VoxelShape;
 import net.minecraft.util.shape.VoxelShapes;
 import net.minecraft.world.LightType;
 import net.minecraft.world.World;
+
+import java.util.ArrayList;
+import java.util.List;
 
 import static meteordevelopment.meteorclient.MeteorClient.mc;
 
@@ -428,5 +432,23 @@ public class BlockUtils {
 
     public static Iterable<BlockPos> iterate(Box box) {
         return BlockPos.iterate(MathHelper.floor(box.minX), MathHelper.floor(box.minY), MathHelper.floor(box.minZ), MathHelper.floor(box.maxX), MathHelper.floor(box.maxY), MathHelper.floor(box.maxZ));
+    }
+
+    public static List<BlockPos> getBlockPositionsFromShapes(List<VoxelShape> shapes) {
+        List<BlockPos> blockPosList = new ArrayList<>();
+
+        for (VoxelShape shape : shapes) {
+            shape.forEachBox((minX, minY, minZ, maxX, maxY, maxZ) -> {
+                for (int x = (int) Math.floor(minX); x < Math.ceil(maxX); x++) {
+                    for (int y = (int) Math.floor(minY); y < Math.ceil(maxY); y++) {
+                        for (int z = (int) Math.floor(minZ); z < Math.ceil(maxZ); z++) {
+                            blockPosList.add(new BlockPos(x, y, z));
+                        }
+                    }
+                }
+            });
+        }
+
+        return blockPosList;
     }
 }

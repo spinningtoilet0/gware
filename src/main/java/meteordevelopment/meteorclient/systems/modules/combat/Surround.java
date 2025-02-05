@@ -10,9 +10,13 @@ import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.function.Predicate;
+import java.util.stream.Collectors;
+
+import com.google.common.collect.Streams;
 import meteordevelopment.meteorclient.MeteorClient;
 import meteordevelopment.meteorclient.events.render.Render3DEvent;
 import meteordevelopment.meteorclient.events.world.TickEvent;
+import meteordevelopment.meteorclient.mixininterface.IBox;
 import meteordevelopment.meteorclient.renderer.ShapeMode;
 import meteordevelopment.meteorclient.settings.BoolSetting;
 import meteordevelopment.meteorclient.settings.ColorSetting;
@@ -26,10 +30,15 @@ import meteordevelopment.meteorclient.systems.modules.Categories;
 import meteordevelopment.meteorclient.systems.modules.Module;
 import meteordevelopment.meteorclient.systems.modules.Modules;
 import meteordevelopment.meteorclient.systems.modules.player.SilentMine;
+import meteordevelopment.meteorclient.systems.modules.render.BreakIndicators;
+import meteordevelopment.meteorclient.utils.entity.DamageUtils;
 import meteordevelopment.meteorclient.utils.entity.EntityUtils;
+import meteordevelopment.meteorclient.utils.player.ChatUtils;
 import meteordevelopment.meteorclient.utils.render.color.Color;
 import meteordevelopment.meteorclient.utils.render.color.SettingColor;
+import meteordevelopment.meteorclient.utils.world.BlockUtils;
 import meteordevelopment.orbit.EventHandler;
+import net.minecraft.block.Block;
 import net.minecraft.block.BlockState;
 import net.minecraft.block.Blocks;
 import net.minecraft.entity.Entity;
@@ -54,6 +63,27 @@ public class Surround extends Module {
 
     private final Setting<Boolean> pauseEat = sgGeneral.add(new BoolSetting.Builder()
             .name("pause-eat").description("Pauses while eating.").defaultValue(true).build());
+
+    private final Setting<Boolean> burrowedEatingCheck = sgGeneral.add(new BoolSetting.Builder()
+        .name("burrowed-eating-check").description("Pauses while burrowed and eating, uses predicted mining to re-enable.").defaultValue(true).build());
+
+    private final Setting<Double> burrowProgress = sgGeneral.add(new DoubleSetting.Builder()
+        .name("burrowed-eating-progress")
+        .description("At what block progress to")
+        .defaultValue(0.6)
+        .min(0.0)
+        .max(1.0)
+        .visible(burrowedEatingCheck::get)
+        .build());
+
+    private final Setting<Double> alwaysSurroundDamage = sgGeneral.add(new DoubleSetting.Builder()
+        .name("burrowed-surround-damage")
+        .description("At what crystal damage to surround anyway, regardless of eating")
+        .defaultValue(2.0)
+        .min(0.0)
+        .sliderMax(36.0)
+        .visible(burrowedEatingCheck::get)
+        .build());
 
     private final Setting<Boolean> protect = sgGeneral.add(new BoolSetting.Builder().name("protect")
             .description(
@@ -139,6 +169,8 @@ public class Surround extends Module {
         int minZ = (int) Math.floor(boundingBox.minZ);
         int maxZ = (int) Math.floor(boundingBox.maxZ);
 
+        ArrayList<BlockPos> blocksConsidered = new ArrayList(10);
+
         for (int x = minX; x <= maxX; x++) {
             for (int z = minZ; z <= maxZ; z++) {
                 BlockPos feetPos = new BlockPos(x, feetY, z);
@@ -155,6 +187,8 @@ public class Surround extends Module {
 
                         BlockPos adjacentPos = feetPos.add(offsetX, 0, offsetZ);
                         BlockState adjacentState = mc.world.getBlockState(adjacentPos);
+
+                        blocksConsidered.add(adjacentPos);
 
                         if (adjacentState.isAir() || adjacentState.isReplaceable()) {
                             placePoses.add(adjacentPos);
@@ -192,6 +226,12 @@ public class Surround extends Module {
 
         if (pauseEat.get() && mc.player.isUsingItem()) {
             return;
+        }
+
+        if (burrowedEatingCheck.get() && mc.player.isUsingItem()) {
+            if (canIgnoreSurround(blocksConsidered)) {
+                return;
+            }
         }
 
         // Very slightly predicted player pos
@@ -250,6 +290,63 @@ public class Surround extends Module {
 
             MeteorClient.BLOCK.endPlacement();
         }
+    }
+
+    private boolean canIgnoreSurround(ArrayList<BlockPos> blocksConsidered) {
+        // we already know the play is eating, so unless:
+        // 1. mining progress on the phase block(s) is > burrowProgress
+        // 2. crystal damage from the surrounding blocks is > alwaysSurroundDamage
+        // then it is safe to return
+
+        // mining progress check
+        List<BlockPos> blockCollisions = BlockUtils.getBlockPositionsFromShapes(
+            Streams.stream(mc.world.getBlockCollisions(mc.player, mc.player.getBoundingBox())).collect(Collectors.toCollection(ArrayList::new))
+        );
+
+        if (blockCollisions.isEmpty()) {
+            return false;
+        }
+
+        double totalMiningProgress = 0.0f;
+
+        BreakIndicators breakIndicators = Modules.get().get(BreakIndicators.class);
+
+        for (BlockPos x : blockCollisions) {
+            totalMiningProgress += breakIndicators.getBlockProgress(x);
+        }
+
+        if (totalMiningProgress >= (burrowProgress.get() * blockCollisions.size())) {
+            return false;
+        }
+
+        Box box = new Box(0, 0, 0, 0, 0, 0);
+
+        // crystal damage check
+        for (BlockPos x : blocksConsidered) {
+            if (!mc.world.isAir(x)) {
+                continue;
+            }
+
+            if (!isCrystalBlock(x.down())) {
+                continue;
+            }
+
+            ((IBox)box).set(x.getX(), x.getY(), x.getZ(), x.getX() + 1.0, x.getY() + 2.0, x.getZ() + 1.0);
+
+            if (EntityUtils.intersectsWithEntity(box, entity -> !entity.isSpectator())) {
+                continue;
+            }
+
+            double selfDamage =
+                DamageUtils.newCrystalDamage(mc.player, mc.player.getBoundingBox(),
+                    new Vec3d(x.getX() + 0.5, x.getY(), x.getZ() + 0.5), null);
+
+            if (selfDamage > alwaysSurroundDamage.get()) {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private void checkSelfTrap(List<BlockPos> placePoses, BlockPos adjacentPos) {
